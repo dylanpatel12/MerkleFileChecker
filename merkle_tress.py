@@ -1,105 +1,75 @@
-
-import os, time, sys
+import os
 import hashlib
-import psutil
 
-# Initialize the process variable outside the function
-process = psutil.Process(os.getpid())
-
-def md5(fname):
-    hash_md5 = hashlib.md5()
-    try:
-        with open(fname, "rb") as f:
-            chunk_size = 4096
-            while chunk := f.read(chunk_size):
-                hash_md5.update(chunk)
-        return hash_md5.hexdigest()
-    except PermissionError:
-        print(f"Permission denied for file {fname}", flush=True)
-    except FileNotFoundError:
-        print(f"File not found: {fname}", flush=True)
-    except IOError as e:
-        print(f"I/O error({e.errno}) for file {fname}: {e.strerror}", flush=True)
-    except Exception as e:  # A generic catch-all for any other exceptions
-        print(f"Error processing file {fname}: {e}", flush=True)
-    return None
-
-def get_memory_usage():
-    memory_info = process.memory_info()
-    memory_used_mb = memory_info.rss / 1024 / 1024  # Convert bytes to MB
-    return memory_used_mb
+# step 1 - hashing each file
+def file_hash(filepath):
+    
+    hasher = hashlib.md5()
+    with open(filepath, "rb") as f: # reads it binary
+        while chunk := f.read(4096):  # reads it in in small chunks
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
-def walk_and_check_hashes(directory, hash_file_path):
-    hash_set = set()
-    files_processed = 0
-    total_files = 0
-    found_match = False  # Variable to track if any hash matches are found
+# step 2 - Merkle Trees 
+class MerkleTree:
+    def __init__(self, hashes):
+        self.levels = []        # store all levels (leaves up to root)
+        self.build_tree(hashes)
 
-        # Print initial memory usage
-    initial_usage = get_memory_usage()
-    print(f"Initial memory usage: {initial_usage:.2f} MB")
+    def build_tree(self, hashes):
+        current_level = hashes
+        self.levels.append(current_level)
+
+        while len(current_level) > 1:
+            next_level = []
+            for i in range(0, len(current_level), 2):
+                left = current_level[i]
+                if i + 1 < len(current_level):
+                    right = current_level[i + 1]
+                else:
+                    right = left  # duplicate last if odd number
+                # parent = hash(left + right)
+                parent = hashlib.md5((left + right).encode()).hexdigest()
+                next_level.append(parent)
+            current_level = next_level
+            self.levels.append(current_level)
+
+    def get_root(self):
+        return self.levels[-1][0] if self.levels else None
 
 
-    start_time = time.time()  # Capture the start time
-
-
-    # Load the hashes from the hash file
-    try:
-        with open(hash_file_path, 'r') as hash_file:
-            for line in hash_file:
-                hash_set.add(line.strip())
-    except Exception as e:
-        print(f"Error loading hash file: {e}", flush=True)
-        return
-
-    # First, count all files to be scanned
-    for root, dirs, files in os.walk(directory):
-        total_files += len(files)
-
-    print(f"Total files to be scanned: {total_files}")
-
-    # Walk through the directory
+# step 3: Scan folder and build tree
+def scan_and_build_merkle(directory):
+    file_hashes = []
     for root, dirs, files in os.walk(directory):
         for name in files:
-            # Check memory usage before processing each file
-            current_usage = get_memory_usage()
-            if current_usage > MEMORY_THRESHOLD_MB:  # Define MEMORY_THRESHOLD_MB as appropriate
-                print(f"\nWarning: High memory usage detected - {current_usage:.2f} MB")
+            filepath = os.path.join(root, name)
+            try:
+                h = file_hash(filepath)
+                file_hashes.append(h)
+                print(f"{filepath} -> {h}")
+            except Exception as e:
+                print(f"Could not read {filepath}: {e}")
 
-            file_path = os.path.join(root, name)
-            file_hash = md5(file_path)
+    if not file_hashes:
+        print("No files found.")
+        return None
 
-            if file_hash in hash_set:
-                print(f"\033[91mHash match found for {file_path}\033[0m", flush=True)
-                found_match = True  # Update found_match to True if a match is found
+    # building the Merkle Tree
+    tree = MerkleTree(file_hashes)
+    root_hash = tree.get_root()
 
-            files_processed += 1
-            if files_processed % 10 == 0:  # Print every 10 files
-                print(f"\rProcessed {files_processed} files...", flush=True)
+    print("\nMerkle Root:", root_hash)
 
-    end_time = time.time()  # Capture the end time
-    elapsed_time = end_time - start_time  # Calculate the elapsed time
+    # saving the root for later verification
+    with open("root_hash.txt", "w") as f:
+        f.write(root_hash)
 
-    # After processing all files, print the final messages
-    print(f"\nFinished processing. Total files processed: {files_processed}")
-    print(f"Number of hashes used for comparison: {len(hash_set)}")
-    print(f"Time taken: {elapsed_time:.2f} seconds")
-
-    if not found_match:  # Check if no matches were found
-        print("No matching hashes found.")
+    return root_hash
 
 
+# actually running it 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: <script> <directory_to_scan> <hash_file_path>")
-    else:
-        directory_to_scan = sys.argv[1]
-        hash_file_path = sys.argv[2]
-        MEMORY_THRESHOLD_MB = 300  # Set an appropriate memory usage threshold in MB
-        walk_and_check_hashes(directory_to_scan, hash_file_path)
-
-# LEGEND
-# https://virusshare.com/hashes
-    #     directory_to_scan = "/home/q/Documents/libri/infosec"
-    # hash_file_path = "/home/q/Documents/cyber_security/hashes/unpacked"
+    folder = input("Enter folder to scan: ")
+    scan_and_build_merkle(folder)
